@@ -15,70 +15,99 @@ const io = new Server(server, {
 
 let presentations = {}; // Store all presentations
 
+// Helper function to create a blank slide
+const createNewSlide = () => {
+    return {
+        drawings: [], // Store drawing data per slide
+    };
+};
+
 io.on('connection', (socket) => {
     console.log('A user connected');
 
+    // Creating a new presentation
     socket.on('create_presentation', (presentationId, nickname) => {
         if (!presentations[presentationId]) {
             presentations[presentationId] = {
-                drawings: [], 
+                slides: [createNewSlide()], // Initialize with one slide
                 users: {}
             };
         }
-    
+
         // Add the creator to the user list with the 'Editor' role
         presentations[presentationId].users[socket.id] = {
             nickname,
             role: 'Editor'
         };
-    
+
         // Broadcast the updated list of presentations
         io.emit('presentation_list', Object.keys(presentations).map((id) => ({
             id,
             name: `Presentation ${id.substring(0, 5)}`,
         })));
-    
+
         // Send the updated user list for the presentation
         io.to(presentationId).emit('user_list', presentations[presentationId].users);
     });
 
+    // User joining a presentation
     socket.on('join_presentation', ({ presentationId, nickname }) => {
         if (!presentations[presentationId]) {
             socket.emit('error', 'Presentation not found');
-            return; // Handle non-existent presentation
+            return;
         }
 
-        socket.join(presentationId); // Join the room for this presentation
-    
-        // Add the user to the presentation's user list
-        if (!presentations[presentationId].users[socket.id]) { // Only add if the user is not already there
+        socket.join(presentationId);
+
+        // Add the user to the presentation's user list if not already present
+        if (!presentations[presentationId].users[socket.id]) {
             presentations[presentationId].users[socket.id] = {
                 nickname,
-                role: 'Viewer' // Default role is Viewer for new users
+                role: 'Viewer' // Default role for new users
             };
         }
-    
-        // Send existing drawings to the new user
-        socket.emit('canvas_data', presentations[presentationId].drawings);
-    
+
+        // Send existing drawings and slides to the new user
+        socket.emit('canvas_data', presentations[presentationId].slides[presentations[presentationId].slides.length - 1].drawings);
+        socket.emit('slide_data', presentations[presentationId].slides);
+
         // Broadcast the updated user list to everyone in the presentation
         io.to(presentationId).emit('user_list', presentations[presentationId].users);
     });
 
-    // When a drawing is received, broadcast it to the room
+    // Handle drawing event
     socket.on('drawing', (data) => {
-        const { presentationId, x0, y0, x1, y1, tool } = data;
-        if (presentations[presentationId]) {
-            // Store the drawing
-            presentations[presentationId].drawings.push({ x0, y0, x1, y1, tool });
+        const { presentationId, slideIndex, x0, y0, x1, y1, tool } = data;
 
-            // Broadcast to others in the same presentation room
-            socket.broadcast.to(presentationId).emit('drawing', data);
+        // Store the drawing on the correct slide
+        presentations[presentationId].slides[slideIndex].drawings.push({ x0, y0, x1, y1, tool });
+
+        // Broadcast the drawing to other users
+        socket.broadcast.to(presentationId).emit('drawing', data);
+    });
+
+    // Handle adding a new slide
+    socket.on('add_slide', (presentationId) => {
+        const newSlide = createNewSlide();
+        presentations[presentationId].slides.push(newSlide);
+
+        // Broadcast the addition of the new slide
+        io.to(presentationId).emit('slide_added', presentations[presentationId].slides.length - 1);
+    });
+
+    // Switch user role (Viewer <-> Editor)
+    socket.on('switch_role', ({ userId, presentationId, newRole }) => {
+        const presentation = presentations[presentationId];
+        if (presentation && presentation.users[userId]) {
+            presentation.users[userId].role = newRole;
+
+            // Broadcast the updated role to the presentation users
+            io.to(presentationId).emit('role_updated', { userId, newRole });
         }
     });
 
+    // Disconnecting a user
     socket.on('disconnect', () => {
-        // Remove the user from the presentations they were in
         for (const [presentationId, presentation] of Object.entries(presentations)) {
             if (presentation.users[socket.id]) {
                 delete presentation.users[socket.id];
@@ -87,32 +116,8 @@ io.on('connection', (socket) => {
         }
         console.log('A user disconnected');
     });
-
-// Assuming you're using socket.io
-socket.on('switch_role', ({ userId, presentationId, newRole }) => {
-    // Update the user role in your data (e.g., database or in-memory storage)
-    const presentation = presentations[presentationId];
-    if (presentation && presentation.users[userId]) {
-        presentation.users[userId].role = newRole;
-
-        // Notify all connected clients about the role change
-        io.to(presentationId).emit('role_updated', {
-            userId,
-            newRole,
-            presentationId
-        });
-
-        console.log(`User ${userId}'s role updated to ${newRole} in presentation ${presentationId}`);
-    } else {
-        socket.emit('error', 'User or presentation not found');
-    }
-});
-
-    
-    
-    
 });
 
 server.listen(3001, () => {
-    console.log('Server is running on port 3001');
+    console.log('Server running on http://localhost:3001');
 });
